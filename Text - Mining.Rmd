@@ -1,0 +1,570 @@
+---
+title: "Text Mining"
+author: "Guillermo Figueroa"
+abstract: Using movie reviews dataset, this project involves different methods for grouping the reviews using topic modelling techniques. In the second part we propose different methods to predict the sentiment of an unseen movie review.
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+
+```{r include=FALSE}
+library(text2vec)
+library(Matrix)
+library(NNLM) # implements NMF
+library(stopwords) # provides lists of stopwords
+library(ggplot2)
+library(plyr)
+library(glmnet)
+
+
+
+
+```
+
+###Sentiment classification of movie reviews
+
+The main purpose of this research is to predict whether a movie review is positive or negative through sentiment analysis.
+
+Sentiment analysis is a research branch that constitutes one of the most important parts of natural language processing (NLP), computational linguistics and text mining. It refers to any measures by which subjective information is extracted from textual documents. In other words, it extracts the polarity of the expressed opinion in a range spanning from positive to negative.
+
+## Data Description. 
+
+We will analyze 2000 movie reviews. Each of them had been labeled with positive or negative according to the sentiment of each review.
+
+ 
+```{r include=FALSE}
+
+corpus <- read.csv('reviews.csv', stringsAsFactors=FALSE) 
+colnames(corpus)
+
+
+iterator <- itoken(corpus$text,
+preprocessor=tolower, # replace capital letters
+tokenizer=word_tokenizer, # split the text into unigrams
+progressbar=FALSE) 
+
+vocabulary <- create_vocabulary(iterator)
+n_words <- nrow(vocabulary)
+n_tokens <- sum(vocabulary$term_count)
+
+```
+
+```{r include=FALSE}
+cat("Number of word types:", n_words, "\nNumber of tokens:", n_tokens)
+```
+
+In the whole documents, it is possible to find 42.392 different type of words and 1:309.372 number of tokens.
+
+
+We can sort the terms in order to find the most 20 common words in the reviews. As we expected, we can see there are mostly stop-words, which occur in almost all documents.  
+
+
+
+```{r}
+ordered_vocabulary <- vocabulary[order(-vocabulary$term_count), ]
+head(ordered_vocabulary, 20)
+```
+
+
+
+For visual representation we select the words that occur at most 20 times.  
+
+
+
+```{r message=FALSE, warning=FALSE}
+vocabulary_20 <- vocabulary[which(vocabulary$term_count <= 20), ]
+
+
+ggplot(data=vocabulary_20, aes(vocabulary_20$term_count)) + 
+  geom_histogram(color = 'white', fill="lightblue", bins = 12) + 
+  labs(x = "Word frequency", y = "Frequency of word frequency") + 
+  ggtitle("Word frequency distribution") + theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+We examined the relation between the frequency and the word rank.
+
+```{r}
+frequency <- ordered_vocabulary$term_count[1:200]
+plot(frequency, 
+     main='Word frequency versus rank', 
+     xlab='Word rank', 
+     ylab='Word frequency')
+```
+
+ We plotted the same relation with log line tranformation. It is possible to observe something similar to a straight-line, which is typical of power low relationships.  
+ 
+
+```{r}
+
+plot(frequency, 
+     main='Word frequency versus rank', 
+     xlab='Word log-rank', 
+     ylab='Word log-frequency', 
+     log='xy')
+```
+
+
+
+
+### Topic Modeling:
+We often have collections of documents, such as blog posts or news articles, that we would like to divide into natural groups so that we can understand them separately. Topic modeling is a method for unsupervised classification of such documents, similar to clustering on numeric data, which finds natural groups of items even when we are not sure what we are looking for.
+
+### Compute the pruned vocabulary
+
+We remove words that occur in more than half of the reviews or that occur less than 20 times overall. We also remove common English stopwords from the vocabulary, via the *stopwords* function/package.  
+
+
+```{r}
+  iterator <- itoken(corpus$text,
+                           preprocessor=tolower,
+                           tokenizer=word_tokenizer,
+                           progressbar=FALSE)
+vocabulary <- create_vocabulary(iterator, stopwords=stopwords::stopwords("en", source = "snowball"))
+vocabulary <- prune_vocabulary(vocabulary, doc_proportion_max=0.2, term_count_min=5)
+nrow(vocabulary)
+```
+
+## Vectorize the corpus. 
+Before we start to work with our dataset, we need to represent documents in vector space. We first have to create mappings from terms to term IDS.  We represent a set of documents as a sparse matrix, where each row corresponds to a document and each column corresponds to a term.  Our DTM has 2000 rows, equal to the number of movie reviews, and 14767 columns, equal to the number of unique terms.
+
+
+
+```{r}
+vectorizer <- vocab_vectorizer(vocabulary)
+dtm <- create_dtm(iterator, vectorizer)
+dim(dtm)
+```
+## The first aproach is to try to find topics amont the whole dataset reviews. 
+In order to achieve this goal, we propose a model called Latent Dirichlet Allocation (LDA). Is a particularly popular method for fitting a topic model. It treats each document as a mixture of topics, and each topic as a mixture of words.  
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+lda_model <- LDA$new(n_topics = 10)
+doc_topic_distr <- lda_model$fit_transform(dtm, n_iter = 20)
+lda_model$plot()
+
+
+
+barplot(doc_topic_distr[1, ], xlab = "topic", 
+        ylab = "proportion", ylim = c(0, 1), 
+        names.arg = 1:ncol(doc_topic_distr))
+
+
+
+topic_matrix_sentiment <- as.data.frame(doc_topic_distr)
+topic_matrix_sentiment$sentiment = corpus$sentiment
+topic_matrix_sentiment$sentiment <- as.character(topic_matrix_sentiment$sentiment)
+
+```
+
+Between the topics and the sentiment, it would be possible to estimate the Correlation.  We can set the value equal to one in case of a positive sentiment review and zero for negative reviews.  
+
+```{r message=FALSE, warning=FALSE}
+topic_matrix_sentiment[topic_matrix_sentiment$sentiment == "neg",]$sentiment = 0
+topic_matrix_sentiment[topic_matrix_sentiment$sentiment == "pos",]$sentiment = 1
+topic_matrix_sentiment$sentiment <- as.numeric(topic_matrix_sentiment$sentiment)
+
+cor(topic_matrix_sentiment[1:10],topic_matrix_sentiment$sentiment)
+
+```
+
+```{r message=FALSE, warning=FALSE}
+
+ddply(topic_matrix_sentiment, .(sentiment), summarize,  RateV1=mean(V1), RateV2=mean(V2), RateV3 = mean(V3), RateV4 = mean(V4), RateV5 = mean(V5), 
+      RateV6 = mean(V6), RateV7 = mean(V7), RateV8 = mean(V8), RateV9 = mean(V9), RateV10 = mean(V10))
+```
+The correlation and the average agregation per topic show the same kind of results. There are topics which are more likely to be positive. On the other hand, we can find topics which are more common to have negative sentiment movie review.  Finally, there are topics like V4 where the effect is not very substancial 
+
+
+#### Results.
+It is interesting to analyse the resulting topics when we set a value of 10. By changing that value we could compare the different results. It could be an interesnt option to define different measures of dispersion and concentration in order to analyse the trade-off between adding topics and the dispersion values. Furthermore, would be particulary interesting to analyse this kind of topics with their evolution in time. It depends on the task, but despite the number of topics,  the idea of understand the proportion of topics that people could be writting as reviews, could be the main goal of this kind of analysis. 
+For our dataset, we can get top 3 words for each of the tenth. They can be sorted by probability of the chance to observe word in a given topic (lambda = 1).  
+
+
+```{r}
+lda_model$get_top_words(n = 10, topic_number = c(1L, 5L, 10L), lambda = 1)
+
+
+```
+
+
+
+Also top-words could be sorted by “relevance” which also takes into account frequency of word in the corpus (0 < lambda < 1). According to the literature, in most cases setting 0.2 < lambda < 0.4 lead to the best results.  
+
+```{r}
+
+lda_model$get_top_words(n = 10, topic_number = c(1L, 5L, 10L), lambda = 0.2)
+```
+
+
+
+In this third part of the project, we will focus on estimate the sentiment of an unseen review, just from the raw data. The goal is to predict the sentiment of fresh reviews, which have not been read before. On the first part, we will take the option to estimate with the multinomial naïve Bayes classifier at first,  as our baseline. It has two main positive features. An efficient parameter estimation and it is sensitive to vocabulary filtering. In the second estimation , we will use the classifier based on the logistic regression. We can say that it is more versatile
+and compatible with any weighting scheme Useful regularization, but it will take us to a higher computational complexity.
+#-
+#-
+
+
+As usual, we split the data into train and test. The goal will be to estimate the models with our training dataset and keep a not used dataset for testing puropose. In this case, we will take the 70% of our possible dataset and use the remaining 30% for test the models performance.  
+
+
+```{r}
+n_row_train <- round(nrow(corpus)*0.70)
+cat("Sampling", n_row_train, "reviews randomly to train the model, keeping the rest for evaluation")
+set.seed(321)
+train_ids <- sample(corpus$doc_id, n_row_train)
+test_ids <- setdiff(corpus$doc_id, train_ids)
+train <- corpus[train_ids, ]
+test <- corpus[test_ids, ]
+
+
+train[train$sentiment == "neg",]$sentiment = 0
+train[train$sentiment == "pos",]$sentiment = 1
+test[test$sentiment == "neg",]$sentiment = 0
+test[test$sentiment == "pos",]$sentiment = 1
+```
+
+
+### Extract the raw vocabulary. 
+We instanciate an iterator to transform the text into a sequence of lowercased unigrams and then compute the vocabulary. It is possible to get deeper into the vocabulary. We can define it as a table; each row consist of a word, its overall frequency and the number of documents it occurs in.  
+
+
+
+
+```{r}
+iterator_train <- itoken(train$text,
+                         preprocessor=tolower,
+                         tokenizer=word_tokenizer,
+                         progressbar=FALSE)
+vocabulary <- create_vocabulary(iterator_train)
+n_words <- nrow(vocabulary)
+n_tokens <- sum(vocabulary$term_count)
+cat("Number of distinct words:", n_words, "\nNumber of tokens:", n_tokens)
+vectorizer = vocab_vectorizer(vocabulary)
+train_dtm = create_dtm(iterator_train, vectorizer) # We construct a document term matrix. 
+```
+
+```{r}
+dim(train_dtm) # Matrix dimensions.
+```
+
+
+### Test
+```{r}
+
+iterator_test <- itoken(test$text,
+                        preprocessor=tolower,
+                        tokenizer=word_tokenizer,
+                        progressbar=FALSE)
+test_dtm = create_dtm(iterator_test, vectorizer)
+```
+
+
+
+### Multinomial naive Bayes Clasifier with Laplace smoothing. 
+```{r}
+
+
+corpus$sentiment <- as.factor(corpus$sentiment)
+n_row_train <- round(nrow(corpus)*0.7)
+cat("Sampling", n_row_train, "comments randomly to train the model, keeping the rest for evaluation ")
+set.seed(42)
+train_ids <- sample(corpus$doc_id, n_row_train)
+test_ids <- setdiff(corpus$doc_id, train_ids)
+train <- corpus[train_ids, ]
+test <- corpus[test_ids, ]
+iterator_train <- itoken(train$text,
+                         preprocessor=tolower,
+                         tokenizer=word_tokenizer,
+                         progressbar=FALSE)
+vocabulary <- create_vocabulary(iterator_train)
+n_words <- nrow(vocabulary)
+n_tokens <- sum(vocabulary$term_count)
+cat("\nNumber of distinct words:", n_words, "\nNumber of tokens:", n_tokens)
+vectorizer = vocab_vectorizer(vocabulary)
+train_dtm = create_dtm(iterator_train, vectorizer)
+iterator_test <- itoken(test$text,
+                        preprocessor=tolower,
+                        tokenizer=word_tokenizer,
+                        progressbar=FALSE)
+test_dtm = create_dtm(iterator_test, vectorizer)
+
+mle_mnb <- function(X, Y, k){
+  d <- ncol(X)
+  q_pos = length(Y[which(Y == 'pos')]) / (length(Y))
+  q_neg = length(Y[which(Y == 'neg')]) / (length(Y))
+  X_pos <- X[which(Y == 'pos'), ]
+  q_j_pos <- (colSums(X_pos) + k) / (sum(X_pos) + d * k)
+  X_neg <- X[which(Y == 'neg'), ]
+  q_j_neg <- (colSums(X_neg) + k) / (sum(X_neg) + d * k)
+  q <- rbind(c(q_pos, q_j_pos), c(q_neg, q_j_neg))
+  return(q)
+}
+```
+
+### Implement a function to train and evaluate the classifier.
+
+```{r}
+evaluate_mnb <- function(X, Y, k, Z){
+  log_q <- log(mle_mnb(X, Y, k))
+  log_ratios <- apply(Z, 1, function(z) c(1, z) %*% log_q[1, ] - c(1, z) %*% log_q[2, ])
+  predictions <- sapply(log_ratios, function(lr) if(lr < 0){'neg'}else{'pos'})
+  confusion_matrix <- as.matrix(table(predictions, test$sentiment))
+  return((confusion_matrix[1,1] + confusion_matrix[2,2]) / sum(confusion_matrix))
+}
+
+
+```
+
+### Evaluate with different levels of K.
+
+```{r}
+acc <- list()
+for(k in 1:5){
+  acc[k] <- evaluate_mnb(train_dtm, train$sentiment, k, test_dtm)
+}
+plot(c(1:5), acc, main="Accuracy vs k (i.e. smoothing constant)", xlab="Value of k", ylab="Accuracy")
+
+
+
+```
+
+ In the best cases we could achieve a 0,83 of accuracy with the Multinomial Bayes Classifier with Laplace smoothing .
+
+
+
+
+### Second Models Option -Logistic Regression 
+We fit a logistic regression model with an L1 penalty and 4 fold cross-validation. It is possible to set the parameters and do not restrict lambda in order to achieve the best accurare option.  We will choose the AUC in order to decide for the best option. We select the option of alpha equal to 1. So we impose a lasso regression. The goal of lasso regression is to obtain the subset of predictors that minimizes prediction error for a quantitative response variable. The lasso does this by imposing a constraint on the model parameters that causes regression coefficients for some variables to shrink toward zero. Variables with a regression coefficient equal to zero after the shrinkage process are excluded from the model.  
+
+
+```{r include=FALSE}
+
+iterator <- itoken(corpus$text,
+preprocessor=tolower, # replace capital letters
+tokenizer=word_tokenizer, # split the text into unigrams
+progressbar=FALSE) 
+
+vocabulary <- create_vocabulary(iterator)
+n_words <- nrow(vocabulary)
+n_tokens <- sum(vocabulary$term_count)
+
+
+
+n_row_train <- round(nrow(corpus)*0.70)
+cat("Sampling", n_row_train, "reviews randomly to train the model, keeping the rest for evaluation")
+set.seed(321)
+corpus$sentiment <- as.character(corpus$sentiment)
+train_ids <- sample(corpus$doc_id, n_row_train)
+test_ids <- setdiff(corpus$doc_id, train_ids)
+train <- corpus[train_ids, ]
+test <- corpus[test_ids, ]
+
+
+train[train$sentiment == "neg",]$sentiment = 0
+train[train$sentiment == "pos",]$sentiment = 1
+test[test$sentiment == "neg",]$sentiment = 0
+test[test$sentiment == "pos",]$sentiment = 1
+
+
+iterator_train <- itoken(train$text,
+                         preprocessor=tolower,
+                         tokenizer=word_tokenizer,
+                         progressbar=FALSE)
+vocabulary <- create_vocabulary(iterator_train)
+n_words <- nrow(vocabulary)
+n_tokens <- sum(vocabulary$term_count)
+cat("Number of distinct words:", n_words, "\nNumber of tokens:", n_tokens)
+vectorizer = vocab_vectorizer(vocabulary)
+train_dtm = create_dtm(iterator_train, vectorizer)
+
+
+iterator_test <- itoken(test$text,
+                        preprocessor=tolower,
+                        tokenizer=word_tokenizer,
+                        progressbar=FALSE)
+test_dtm = create_dtm(iterator_test, vectorizer)
+
+
+
+```
+
+```{r}
+
+NFOLDS = 4
+glmnet_classifier = cv.glmnet(x = train_dtm, y = train[['sentiment']], 
+                              family = 'binomial', 
+                              alpha = 1, 
+                              type.measure = "auc",
+                              nfolds = NFOLDS,
+                              thresh = 1e-3,
+                              maxit = 1e3) 
+
+plot(glmnet_classifier)
+```
+
+
+
+
+```{r}
+print(paste("max AUC =", round(max(glmnet_classifier$cvm), 4))) # We plot MAX AUC
+
+```
+
+
+We predict for our test dataset
+```{r}
+preds = predict(glmnet_classifier, test_dtm, type = 'response')[,1]
+glmnet:::auc(as.integer(test$sentiment), preds)
+```
+ The performance for our test dataset is almost the same than for our training cross-validation method. 
+ 
+### Pruning 
+Now lets try to improve the performance when we prune our reviews. The idea behind this method is to remove from the analysis the stop words that may be written a lot but it wont add information to decide if a review could be considered positive or negative. Here we will remove pre-defined stopwords by stopwords package. At the end, we remove very common and very unusual terms.
+
+We remove words that occur in more than half of the reviews or that occur less than 20 times overall. We also remove common English stopwords from the vocabulary:  
+
+
+```{r}
+iterator_train_prun <- itoken(iterator_train,
+                         preprocessor=tolower,
+                         tokenizer=word_tokenizer,
+                         progressbar=FALSE)
+vocabulary_train_prun <- create_vocabulary(iterator_train_prun, stopwords=stopwords::stopwords("en", source = "snowball"))
+vocabulary_pruned <- prune_vocabulary(vocabulary_train_prun,term_count_min = 10, 
+                                 doc_proportion_max = 0.5,
+                                 doc_proportion_min = 0.001)
+nrow(vocabulary_pruned)
+vectorizer_pruned = vocab_vectorizer(vocabulary_pruned)
+dtm_train_pruned  = create_dtm(iterator_train, vectorizer_pruned)
+
+dim(dtm_train_pruned)
+
+dtm_test_pruned = create_dtm(iterator_test, vectorizer_pruned)
+dim(dtm_test_pruned)
+
+
+glmnet_classifier_pruned = cv.glmnet(x = dtm_train_pruned, y = train[['sentiment']], 
+                 family = 'binomial', 
+                 alpha = 1,
+                 type.measure = "auc",
+                 nfolds = NFOLDS,
+                 thresh = 1e-3,
+                 maxit = 1e3)
+plot(glmnet_classifier_pruned)
+
+```
+ Results within the training dataset:  
+ 
+
+```{r}
+print(paste("max AUC =", round(max(glmnet_classifier_pruned$cvm), 4)))
+```
+
+```{r}
+dtm_test_pruned = create_dtm(iterator_test, vectorizer_pruned)
+preds_pruned = predict(glmnet_classifier_pruned, dtm_test_pruned, type = 'response')[,1]
+glmnet:::auc(as.integer(test$sentiment), preds_pruned)
+```
+
+We have achivied a sligthly worse estimation for our testing dataset. 
+
+### N-grams. 
+Other way to try to improve the performance of our model is to use the n-grams instead of unigrams. Here we will use up to 2-grams.  
+
+
+```{r}
+vocab_bigram = create_vocabulary(iterator_train, ngram = c(1L, 2L))
+vocab_bigram = prune_vocabulary(vocab_bigram, term_count_min = 10, 
+                         doc_proportion_max = 0.5)
+
+bigram_vectorizer = vocab_vectorizer(vocab_bigram)
+
+dtm_train_bigram = create_dtm(iterator_train, bigram_vectorizer)
+
+glmnet_classifier_bigram = cv.glmnet(x = dtm_train_bigram, y = train[['sentiment']], 
+                 family = 'binomial', 
+                 alpha = 1,
+                 type.measure = "auc",
+                 nfolds = NFOLDS,
+                 thresh = 1e-3,
+                 maxit = 1e3)
+plot(glmnet_classifier_bigram)
+
+```
+
+### Results 
+
+```{r}
+print(paste("max AUC =", round(max(glmnet_classifier_bigram$cvm), 4)))
+```
+```{r}
+dtm_test_bigram = create_dtm(iterator_test, bigram_vectorizer)
+preds_bigram = predict(glmnet_classifier_bigram, dtm_test_bigram, type = 'response')[,1]
+glmnet:::auc(as.integer(test$sentiment), preds_bigram)
+
+
+
+```
+
+Again, we have achived a sligthly worse estimation compared to our first logistic model attempt. 
+
+###TF-IDF transformation
+
+Another technique that we could apply to our dataset is the TF-IDF transformation. It will increase the weight of terms which are specific to a single document or handful of documents and decrease the weigth for terms used in most documents. In other words, which decreases the weight for commonly used words and increases the weight for words that are not used very much in a collection of documents. The statistic tf-idf is intended to measure how important a word is to a document in a collection (or corpus) of documents.  
+
+```{r}
+vocab_tf = create_vocabulary(iterator_train)
+vectorizer_tf = vocab_vectorizer(vocab_tf)
+dtm_train_tf = create_dtm(iterator_train, vectorizer_tf)
+
+# We define the tfidf model
+tfidf = TfIdf$new()
+# Fit model to train data and transform train data with fitted model
+dtm_train_tfidf = fit_transform(dtm_train_tf, tfidf)
+
+
+dtm_test_tfidf = create_dtm(iterator_test, vectorizer_tf)
+dtm_test_tfidf = transform(dtm_test_tfidf, tfidf)
+
+glmnet_classifier_tf = cv.glmnet(x = dtm_train_tfidf, y = train[['sentiment']], 
+                              family = 'binomial', 
+                              alpha = 1,
+                              type.measure = "auc",
+                              nfolds = NFOLDS,
+                              thresh = 1e-3,
+                              maxit = 1e3)
+plot(glmnet_classifier_tf)
+```
+
+
+
+### Results.
+```{r}
+preds_tf = predict(glmnet_classifier_tf, dtm_test_tfidf, type = 'response')[,1]
+glmnet:::auc(as.integer(test$sentiment), preds_tf)
+
+```
+
+The first attempt continue been our best estimation. 
+
+
+
+We can choose the best sentiment clasificator as the one that has the highest AUC. For our dataset and with the choosen tuning parameters we found out that the logistic regression with penalty l1 has achieved 0,91 AUC in our testing dataset. But there are a lot of different options to continue trying and improving our estimation. We can implement different combinations of paramenters that would lead to improve the classificators and even combinations of different models that would lead to improve the general performance. As an example, we wonder about  dividing the dataset into a segmentation task, as we did in the second part of the proyect. and from that on, estimate one model for each of the topics. It depends on the task, but some lexicon could give more information about the sentiment if we first consider the topic.  A lot of work still remain, and for each kind of text types we need to search for the best way of achive the best results. As we could see from the estimations on the third part, the kind of method is important for little performance improvements, but the combination of methods would lead us into the best results. 
+
+#-
+
+
+
+
+### References
+
+Silge and Robinson - "Text Mining with R"" - 2018
+
+Selivanov - http://text2vec.org/ 
+
+Cambria, Schuller and others - "New Avenues in Opinion Mining and Sentiment Analysis" - 2013
+
+Pang and Lee - "A Sentimental Education: Sentiment Analysis Using Subjectivity Summarization Based on Minimum Cuts"
